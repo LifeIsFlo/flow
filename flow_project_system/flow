@@ -1,0 +1,411 @@
+#!/bin/bash
+
+setVars() {
+    if [ -e "$ROOT/flow.properties" ]; then
+        projectName=$(jq -r '.projectName' "$ROOT/flow.properties")
+        flowVersion=$(jq -r '.flowVersion' "$ROOT/flow.properties")
+        cppVersion=$(jq -r '.cVersion' "$ROOT/flow.properties")
+        mainFile=$(jq -r '.mainFile' "$ROOT/flow.properties")
+    fi
+}
+
+COMPILING="[\033[33mCOMPILING\033[0m]"
+OK="[\033[32mSUCCES\033[0m]"
+FAILED="[\033[31mFAILED\033[0m]"
+INFO="[INFO]"
+
+ROOT="$(pwd)"
+
+projectName=""
+flowVersion=""
+cppVersion=""
+mainFile=""
+platform=""
+MODE=""
+
+setVars
+
+# Function definitions
+
+displayTasks(){
+    echo "Available tasks:"
+    echo "  build"
+    echo "  tasks"
+    echo "  run"
+    echo "  prepareRun"
+    echo "  genVsCodeRunsLinux"
+    echo "  displayTasks"
+    echo "  updateFlow"
+    echo "  status"
+    echo "  clean"
+    echo "  init"
+}
+
+updateFlow() {
+    tmpdir=$(mktemp -d)
+
+    git clone --depth 1 https://github.com/LifeIsFlo/CPP-Project-System.git "$tmpdir" > /dev/null 2>&1
+    echo "Download temp folder: $tmpdir"
+
+    cp "$tmpdir"/* "$ROOT/"
+
+    rm -rf "$tmpdir"
+}
+
+checkMode(){
+    case "$MODE" in
+        debug)
+            ;;
+        release)
+            ;;
+        *)
+            echo -e "$FAILED Wrong value for second parameter! Allowed values: debug, release"
+            exit 1
+            ;;
+    esac
+}
+
+checkPlatform(){
+    case "$platform" in
+    windows);;
+    linux);;
+    *)
+        echo -e "A platform must be defined with -p <platform>"
+        exit 1
+    ;;
+    esac
+}
+
+genVsCodeRunsLinux() {
+    mkdir -p "$ROOT/.vscode"
+
+    if [ ! -e "$ROOT/.vscode/c_cpp_properties.json" ]; then
+        cat << 'EOF' > "$ROOT/.vscode/c_cpp_properties.json"
+{
+    "configurations": [
+        {
+            "name": "Windows on Linux",
+            "includePath": [
+                "${workspaceFolder}/headers/common"
+                "${workspaceFolder}/include/common"
+            ],
+            "defines": [],
+            "compilerPath": "/usr/bin/g++",
+            "cStandard": "c17",
+            "cppStandard": "c++17",
+            "intelliSenseMode": "linux-gcc-x64"
+        }
+    ],
+    "version": 4
+}
+EOF
+    fi
+}
+
+init(){
+    mkdir -p "$ROOT/headers/$platform"
+    mkdir -p "$ROOT/headers/common"
+    mkdir -p "$ROOT/assets/$platform"
+    mkdir -p "$ROOT/assets/common"
+    mkdir -p "$ROOT/src/$platform"
+    mkdir -p "$ROOT/src/common"
+    mkdir -p "$ROOT/include/$platform"
+    mkdir -p "$ROOT/include/common"
+
+    if [ -e "$ROOT/flow.properties" ]; then
+        echo "flow.properties already exists, skipping..."
+    else
+        jq -n '{
+            "projectName": "Example",
+            "flowVersion": "v1.0.0",
+            "cVersion": "c++17",
+            "mainFile": "Program.cpp"
+        }' > "$ROOT/flow.properties"
+    fi
+
+    echo "Found header files: "
+    find $ROOT -type f -name "*.h" -exec echo {} \;
+    find $ROOT -type f -name "*.hpp" -exec echo {} \;
+
+    echo "Found source files: "
+    find $ROOT -type f -name "*.cpp" -exec echo {} \;
+    find $ROOT -type f -name "*.c" -exec echo {} \;
+
+    echo "Moving project files into Flow's compilation directories"
+    echo "Headers: $ROOT/headers/common/"
+    echo "Sources: $ROOT/src/common/"
+
+    read -r -p "Do you want to continue? [y/N]: "
+    echo
+
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        read -r -p "Remove source files after successful transfer? [y/N]: "
+        echo
+
+        delete_args=()
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            delete_args+=(--remove-source-files)
+        fi
+
+        rsync -avnm --out-format='headers/common/%n' --ignore-existing "${delete_args[@]}" \
+            --exclude='/.git/***' \
+            --exclude='/assets/***' \
+            --exclude='/include/***' \
+            --exclude='/headers/***' \
+            --exclude='/src/***' \
+            --include='*/' \
+            --include='*.h' \
+            --include='*.hpp' \
+            --exclude='*' \
+            "$ROOT/" "$ROOT/headers/common/"
+
+        rsync -avnm --out-format='src/common/%n' --ignore-existing "${delete_args[@]}" \
+            --exclude='/.git/***' \
+            --exclude='/assets/***' \
+            --exclude='/include/***' \
+            --exclude='/headers/***' \
+            --exclude='/src/***' \
+            --include='*/' \
+            --include='*.c' \
+            --include='*.cpp' \
+            --exclude='*' \
+            "$ROOT/" "$ROOT/src/common/"
+
+        read -r -p "Agree with this structure? [y/N]: "
+
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+
+            rsync -avm --out-format='headers/common/%n' --ignore-existing "${delete_args[@]}" \
+                --exclude='/.git/***' \
+                --exclude='/assets/***' \
+                --exclude='/include/***' \
+                --exclude='/headers/***' \
+                --exclude='/src/***' \
+                --include='*/' \
+                --include='*.h' \
+                --include='*.hpp' \
+                --exclude='*' \
+                "$ROOT/" "$ROOT/headers/common/"
+
+            rsync -avm --out-format='src/common/%n' --ignore-existing "${delete_args[@]}" \
+                --exclude='/.git/***' \
+                --exclude='/assets/***' \
+                --exclude='/include/***' \
+                --exclude='/headers/***' \
+                --exclude='/src/***' \
+                --include='*/' \
+                --include='*.c' \
+                --include='*.cpp' \
+                --exclude='*' \
+                "$ROOT/" "$ROOT/src/common/"
+        fi
+    fi
+
+    setVars
+}
+
+build() {
+
+    echo -e "$COMPILING Creating build directory..."
+
+    mkdir -p "$ROOT/build/bin" "$ROOT/build/obj"
+    mkdir -p "$ROOT/build/bin/$MODE/$platform/"
+    mkdir -p "$ROOT/build/obj/$MODE/$platform/common" "$ROOT/build/obj/$MODE/$platform/platform"
+
+    echo -e "$OK Done"
+
+    echo -e "$COMPILING Compiling source files..."
+
+    case "$platform" in
+    windows)
+        CC="x86_64-w64-mingw32-g++"
+        ;;
+    linux)
+        CC="g++"
+        ;;
+    esac
+
+    echo -e "$INFO Compiling for $cppVersion"
+
+    if [ -e "$ROOT/src/$platform/$mainFile" ]; then
+
+        echo -e "$COMPILING Compiling the main file: $mainFile"
+
+        $CC -c "$ROOT/src/$platform/$mainFile" \
+            -I "$ROOT/include/common" \
+            -I "$ROOT/headers/common" \
+            -std="$cppVersion" \
+            -o "$ROOT/build/obj/$MODE/$platform/platform/$mainFile".o
+
+        if [ $? -ne 0 ]; then
+            echo -e "$FAILED Failed compiling Program.cpp"
+            exit 1
+        else
+            echo -e "$OK Compiled successfully!"
+        fi
+
+    fi
+
+    for f in $ROOT/src/common/*.cpp; do
+        if [ -f "$f" ] && [ "$(basename "$f")" != "$mainFile" ]; then
+            echo -e "$COMPILING Compiling $f..."
+
+            $CC -c "$f" \
+                -I "$ROOT/include/common" \
+                -I "$ROOT/headers/common" \
+                -std="$cppVersion" \
+                -o "$ROOT/build/obj/$MODE/$platform/common/$(basename "${f%.cpp}.o")"
+
+            if [ $? -ne 0 ]; then
+                echo -e "$FAILED Failed compiling $f"
+                exit 1
+            else
+                echo -e "$OK Compiled successfully!"
+            fi
+        fi
+    done
+
+    for f in $ROOT/src/$platform/*.cpp; do
+        if [ -f "$f" ] && [ "$(basename "$f")" != "$mainFile" ]; then
+            echo -e "$COMPILING Compiling $f..."
+
+            $CC -c "$f" \
+                -I "$ROOT/include/$platform" \
+                -I "$ROOT/headers/$platform" \
+                -I "$ROOT/headers/common" \
+                -std="$cppVersion" \
+                -o "$ROOT/build/obj/$MODE/$platform/platform/$(basename "${f%.cpp}.o")"
+
+            if [ $? -ne 0 ]; then
+                echo -e "$FAILED Failed compiling $f"
+                exit 1
+            else
+                echo -e "$OK Compiled successfully!"
+            fi
+        fi
+    done
+
+    echo -e "$COMPILING Making executable..."
+
+    shopt -s nullglob
+
+    objects=(
+        "$ROOT/build/obj/$MODE/$platform/common/"*.o
+        "$ROOT/build/obj/$MODE/$platform/platform/"*.o
+    )
+
+    if ((${#objects[@]} == 0)); then
+        echo "No object files found to link" >&2
+        exit 1
+    fi
+
+    $CC "${objects[@]}" -o "$ROOT/build/bin/$MODE/$platform/$projectName"
+
+    if [ $? -ne 0 ]; then
+        echo -e "$FAILED Build failed!"
+        exit 1
+    else
+        echo -e "$OK Build complete"
+    fi
+}
+
+prepareRun(){
+    build
+    mkdir -p "$ROOT/logs"
+}
+
+run(){
+    prepareRun
+    case "$MODE" in
+        debug)
+            echo "no run function yet"
+            ;;
+        release)
+            echo "no run function yet"
+            ;;
+    esac
+}
+
+runDebug() 
+{
+    $ROOT/build/bin/debug/$platform
+}
+
+runRelease() 
+{
+
+}
+
+clean() {
+    echo "Cleaning..."
+
+    case "$cleanMode" in
+        debug)
+            rm -rf "$ROOT/build/bin/debug" "$ROOT/build/obj/debug"
+            ;;
+        release)
+            rm -rf "$ROOT/build/bin/release" "$ROOT/build/obj/release" 
+            ;;
+        logs)
+            rm -rf "$ROOT/logs"
+            ;;
+        runs)
+            rm -rf "$ROOT/.vscode" "$ROOT/run"
+            ;;
+        *)
+            rm -rf "$ROOT/build/bin" "$ROOT/build/obj" "$ROOT/.vscode" "$ROOT/logs" "$ROOT/run"
+            ;;
+    esac
+
+    echo -e "$OK Clean complete"
+}
+
+# Start of operations
+
+while getopts "b:r:c:huisp:g" opt; do
+    case "${opt}" in
+        b)
+            MODE="$OPTARG"
+            checkPlatform
+            checkMode
+            build
+            ;;
+        p)
+            platform="$OPTARG"
+            ;;
+        g)
+            checkPlatform
+            genVsCodeRunsLinux
+            ;;
+        r)
+            MODE="$OPTARG"
+            checkPlatform
+            checkMode
+            run
+            ;;
+        c) 
+            cleanMode="$OPTARG"
+            clean
+            ;;
+        h) displayTasks ;;
+        u) updateFlow ;;
+        i)
+            checkPlatform
+            init
+            ;;
+        s)
+            echo "working dir: $ROOT"
+            if [ -e "$ROOT/flow.properties" ]; then
+                echo "projectName: $projectName"
+                echo "flowVersion: $flowVersion"
+                echo "cppVersion: $cppVersion"
+            else
+                echo -e "$FAILED project needs to be initialized with './flow -i'"
+            fi
+            ;;
+        \?)
+            displayTasks
+            exit 1
+            ;;
+    esac
+done
